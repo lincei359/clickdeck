@@ -1,0 +1,54 @@
+name: Publish Windows release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        default: v1.0.0
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    env:
+      CLICKDECK_RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Build application
+        shell: pwsh
+        run: ./source/build.ps1
+
+      - name: Package portable app and checksum
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path dist/ClickDeck -Force | Out-Null
+          Copy-Item -LiteralPath ClickDeck.exe,ClickDeck.ico,LICENSE,README.md -Destination dist/ClickDeck
+          Copy-Item -LiteralPath docs -Destination dist/ClickDeck -Recurse
+          $archive = Join-Path (Get-Location) ('dist/ClickDeck-' + $env:CLICKDECK_RELEASE_TAG + '-Windows.zip')
+          $checksum = Join-Path (Get-Location) ('dist/ClickDeck-' + $env:CLICKDECK_RELEASE_TAG + '-SHA256.txt')
+          Compress-Archive -LiteralPath dist/ClickDeck -DestinationPath $archive
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText($checksum, $hash + '  ' + [System.IO.Path]::GetFileName($archive) + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Attach files to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $archive = Join-Path (Get-Location) ('dist/ClickDeck-' + $env:CLICKDECK_RELEASE_TAG + '-Windows.zip')
+          $checksum = Join-Path (Get-Location) ('dist/ClickDeck-' + $env:CLICKDECK_RELEASE_TAG + '-SHA256.txt')
+          gh release upload $env:CLICKDECK_RELEASE_TAG $archive $checksum --repo $env:GH_REPO
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
