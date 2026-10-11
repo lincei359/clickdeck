@@ -1,0 +1,50 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build application
+        shell: pwsh
+        run: ./source/build.ps1
+
+      - name: Compile integration test tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path test-results -Force | Out-Null
+          $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          $references = @('/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll', '/reference:System.Runtime.Serialization.dll')
+          $repository = (Get-Location).Path
+          & $compiler /nologo /target:winexe /codepage:65001 @references ('/out:' + (Join-Path $repository 'test-results\TestTarget.exe')) (Join-Path $repository 'source\tests\TestTarget.cs')
+          if ($LASTEXITCODE -ne 0) { throw 'TestTarget compilation failed.' }
+          & $compiler /nologo /target:exe /codepage:65001 @references ('/reference:' + (Join-Path $repository 'ClickDeck.exe')) ('/out:' + (Join-Path $repository 'test-results\TestRunner.exe')) (Join-Path $repository 'source\tests\TestRunner.cs')
+          if ($LASTEXITCODE -ne 0) { throw 'TestRunner compilation failed.' }
+
+      - name: Package portable app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist/ClickDeck -Force | Out-Null
+          Copy-Item -LiteralPath ClickDeck.exe,ClickDeck.ico,LICENSE,README.md -Destination dist/ClickDeck
+          Copy-Item -LiteralPath docs -Destination dist/ClickDeck -Recurse
+          Compress-Archive -LiteralPath dist/ClickDeck -DestinationPath dist/ClickDeck-Windows.zip
+
+      - name: Upload portable app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ClickDeck-Windows
+          path: dist/ClickDeck-Windows.zip
+          if-no-files-found: error

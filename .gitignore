@@ -1,0 +1,25 @@
+# Build products and release bundles
+*.exe
+*.dll
+*.pdb
+*.zip
+dist/
+bin/
+obj/
+
+# Local scratch and user settings
+work/
+test-results/
+settings.json
+settings.json.*
+*.log
+*.tmp
+.env
+.env.*
+
+# Editor and OS files
+.vs/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
