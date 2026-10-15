@@ -30,6 +30,10 @@ namespace ClickDeck
         [DataMember] public int OpacityPercent = 100;
         [DataMember] public bool HasPosition;
         [DataMember] public int X, Y;
+        [DataMember] public bool ShowNumericKeyboard;
+        [DataMember] public bool ShowAlphabetKeyboard;
+        [DataMember] public bool HasNumericPosition, HasAlphabetPosition;
+        [DataMember] public int NumericX, NumericY, AlphabetX, AlphabetY;
         public Preferences Copy()
         {
             Preferences copy = (Preferences)MemberwiseClone();

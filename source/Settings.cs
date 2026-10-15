@@ -13,7 +13,7 @@ namespace ClickDeck
         private TextBox labelBox, shortcutBox, snippetBox;
         private ComboBox kindBox;
         private NumericUpDown columns;
-        private CheckBox compact, showHints;
+        private CheckBox compact, showHints, showNumeric, showAlphabet;
         private TrackBar opacity;
         private Label opacityLabel, errorLabel, fieldLabel, hintLabel;
         private Button record, remove;
@@ -30,8 +30,8 @@ namespace ClickDeck
             AutoScaleMode = AutoScaleMode.None; FormBorderStyle = FormBorderStyle.FixedDialog;
             MinimizeBox = false; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen;
             TopMost = true;
-            ClientSize = new Size(U(746), Math.Min(U(655), Screen.PrimaryScreen.WorkingArea.Height - U(65)));
-            AutoScroll = true; AutoScrollMinSize = new Size(U(746), U(655));
+            ClientSize = new Size(U(746), Math.Min(U(730), Screen.PrimaryScreen.WorkingArea.Height - U(65)));
+            AutoScroll = true; AutoScrollMinSize = new Size(U(746), U(730));
             Label title = LabelAt("把常用操作，留在手边。", 26, 22, 690, 34); title.Font = Theme.Font(18f, true); title.ForeColor = Theme.Ink;
             LabelAt("勾选决定显示哪些按钮；选中一项，在右侧自由编辑。", 28, 66, 690, 24).ForeColor = Theme.Muted;
 
@@ -78,9 +78,13 @@ namespace ClickDeck
             opacity.ValueChanged += (s, e) => opacityLabel.Text = opacity.Value + "%";
             Label hotkey = LabelAt(hotkeyAvailable ? "显示 / 隐藏：Ctrl+Alt+Space" : "显示 / 隐藏：右下角系统托盘", 363, 554, 350, 27); hotkey.ForeColor = Theme.Muted;
 
-            ButtonAt("恢复默认", 28, 602, 110, 34, (s, e) => RestoreDefaults());
-            Button cancel = ButtonAt("取消", 500, 602, 92, 34, (s, e) => Close()); CancelButton = cancel;
-            Button save = ButtonAt("保存并应用", 606, 602, 110, 34, (s, e) => ApplyDraft());
+            LabelAt("屏幕键盘", 28, 599, 110, 26).Font = Theme.Font(10f, true);
+            showNumeric = new CheckBox { Text = "显示数字键盘", Checked = draft.ShowNumericKeyboard, Bounds = new Rectangle(U(155), U(598), U(190), U(28)), ForeColor = Theme.Ink }; Controls.Add(showNumeric);
+            showAlphabet = new CheckBox { Text = "显示字母键盘", Checked = draft.ShowAlphabetKeyboard, Bounds = new Rectangle(U(370), U(598), U(240), U(28)), ForeColor = Theme.Ink }; Controls.Add(showAlphabet);
+            LabelAt("可分别拖动；英文与拼音跟随目标窗口的输入法。", 155, 635, 550, 25).ForeColor = Theme.Muted;
+            ButtonAt("恢复默认", 28, 678, 110, 34, (s, e) => RestoreDefaults());
+            Button cancel = ButtonAt("取消", 500, 678, 92, 34, (s, e) => Close()); CancelButton = cancel;
+            Button save = ButtonAt("保存并应用", 606, 678, 110, 34, (s, e) => ApplyDraft());
             save.BackColor = Theme.Teal; save.ForeColor = Color.White; save.FlatAppearance.BorderColor = Theme.Teal; AcceptButton = save;
             Reload(draft.Actions.Count > 0 ? draft.Actions[0].Id : null);
         }
@@ -162,6 +166,7 @@ namespace ClickDeck
         {
             Preferences p = Preferences.Defaults(); p.HasPosition = draft.HasPosition; p.X = draft.X; p.Y = draft.Y; draft = p;
             columns.Value = p.Columns; compact.Checked = p.Compact; showHints.Checked = p.ShowHints; opacity.Value = p.OpacityPercent;
+            showNumeric.Checked = p.ShowNumericKeyboard; showAlphabet.Checked = p.ShowAlphabetKeyboard;
             Reload(p.Actions[0].Id);
         }
         private void ToggleCapture()
@@ -199,6 +204,7 @@ namespace ClickDeck
                 if (error != null) { Reload(a.Id); errorLabel.Text = error; return; }
             }
             draft.Columns = (int)columns.Value; draft.Compact = compact.Checked; draft.ShowHints = showHints.Checked; draft.OpacityPercent = opacity.Value;
+            draft.ShowNumericKeyboard = showNumeric.Checked; draft.ShowAlphabetKeyboard = showAlphabet.Checked;
             apply(draft.Copy()); Close();
         }
     }

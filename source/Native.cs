@@ -22,6 +22,7 @@ namespace ClickDeck
         [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr h, int id, uint modifiers, uint key);
         [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr h, int id);
         [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
+        [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
         [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
         [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
         [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int command);
@@ -68,7 +69,7 @@ namespace ClickDeck
             uint flags = up ? KEYUP : 0;
             if (key == 0x5B || key == 0x5C || key == 0x2D || key == 0x2E ||
                 (key >= 0x21 && key <= 0x28)) flags |= EXTENDED;
-            return new INPUT { type = 1, data = new InputUnion { keyboard = new KEYBDINPUT { vk = key, flags = flags } } };
+            return new INPUT { type = 1, data = new InputUnion { keyboard = new KEYBDINPUT { vk = key, scan = (ushort)MapVirtualKey(key, 0), flags = flags } } };
         }
 
         public static INPUT UnicodeKey(char value, bool up)
@@ -101,6 +102,10 @@ namespace ClickDeck
                     if (c == '\n' || c == '\t') { ushort vk = (ushort)(c == '\n' ? 0x0D : 0x09); events.Add(Key(vk, false)); events.Add(Key(vk, true)); }
                     else { events.Add(UnicodeKey(c, false)); events.Add(UnicodeKey(c, true)); }
                 }
+            }
+            else if (action.Kind == "ime-toggle")
+            {
+                events.Add(Key(0x10, false)); events.Add(Key(0x10, true));
             }
             else
             {

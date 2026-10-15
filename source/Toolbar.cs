@@ -31,6 +31,7 @@ namespace ClickDeck
         public bool ShowHint = true;
         public bool Small;
         public string Symbol;
+        public bool Latched;
         private bool hover, pressed, success;
         private Timer flash;
         public ActionTile(ActionSpec action)
@@ -61,8 +62,8 @@ namespace ClickDeck
         {
             base.OnPaint(e); Graphics g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias;
             bool copy = Action != null && Action.Shortcut == "Ctrl+C" && Action.Kind == "shortcut";
-            Color fill = Small ? (hover ? Theme.Pale : Theme.Paper) : success || pressed ? Theme.Teal : copy ? Theme.Pale : hover ? Color.FromArgb(237, 241, 235) : Color.White;
-            Color ink = success || pressed ? Color.White : Theme.Ink;
+            Color fill = Small ? (hover ? Theme.Pale : Theme.Paper) : success || pressed || Latched ? Theme.Teal : copy ? Theme.Pale : hover ? Color.FromArgb(237, 241, 235) : Color.White;
+            Color ink = success || pressed || Latched ? Color.White : Theme.Ink;
             Rectangle box = new Rectangle(0, 0, Width - 1, Height - 1);
             using (GraphicsPath p = Theme.Round(box, Math.Max(4, (int)(Height * .13))))
             using (SolidBrush brush = new SolidBrush(fill))
@@ -106,6 +107,10 @@ namespace ClickDeck
         private Point dragCursor, dragOrigin;
         private SettingsForm settings;
         private Label emptyLabel;
+        private bool closing;
+        private FloatingKeyboardForm numericKeyboard, alphabetKeyboard;
+        public FloatingKeyboardForm NumericKeyboard { get { return numericKeyboard; } }
+        public FloatingKeyboardForm AlphabetKeyboard { get { return alphabetKeyboard; } }
         public IList<ActionTile> Tiles { get { return tiles.AsReadOnly(); } }
         public string LastStatus { get { return status; } }
         private int U(int n) { return (int)Math.Round(n * scale); }
@@ -161,15 +166,53 @@ namespace ClickDeck
             trayMenu = new ContextMenuStrip();
             trayMenu.Items.Add("显示 / 隐藏", null, (s, e) => ToggleVisible());
             trayMenu.Items.Add("编辑按钮与外观…", null, (s, e) => OpenSettings());
+            ToolStripMenuItem numericItem = new ToolStripMenuItem("显示数字键盘") { CheckOnClick = true };
+            ToolStripMenuItem alphabetItem = new ToolStripMenuItem("显示字母键盘") { CheckOnClick = true };
+            numericItem.Click += (s, e) => SetKeyboardVisible(false, numericItem.Checked);
+            alphabetItem.Click += (s, e) => SetKeyboardVisible(true, alphabetItem.Checked);
+            trayMenu.Items.Add(numericItem); trayMenu.Items.Add(alphabetItem);
             trayMenu.Items.Add(new ToolStripSeparator());
             trayMenu.Items.Add("退出点点快捷", null, (s, e) => Close());
             tray = new NotifyIcon { Icon = trayIcon, Text = "点点快捷 · 鼠标点一下", ContextMenuStrip = trayMenu, Visible = true };
             tray.DoubleClick += (s, e) => { Show(); KeepOnScreen(); };
-            trayMenu.Opened += (s, e) => { trayMenu.Items[0].Text = Visible ? "隐藏悬浮栏" : "显示悬浮栏"; };
+            trayMenu.Opened += (s, e) => { trayMenu.Items[0].Text = Visible ? "隐藏悬浮栏" : "显示悬浮栏"; numericItem.Checked = Preferences.ShowNumericKeyboard; alphabetItem.Checked = Preferences.ShowAlphabetKeyboard; };
         }
         public void ToggleVisible() { if (Visible) Hide(); else { Show(); KeepOnScreen(); } }
         public void ApplyPreferences(Preferences prefs)
-        { Preferences = prefs; Build(); KeepOnScreen(); Save(); }
+        { CaptureKeyboardPositions(prefs); Preferences = prefs; Build(); KeepOnScreen(); SyncKeyboards(); Save(); }
+        protected override void OnVisibleChanged(EventArgs e)
+        { base.OnVisibleChanged(e); if (IsHandleCreated && !closing) SyncKeyboards(); }
+        public void SetKeyboardVisible(bool alphabet, bool visible)
+        {
+            if (alphabet) Preferences.ShowAlphabetKeyboard = visible; else Preferences.ShowNumericKeyboard = visible;
+            if (visible && !Visible) Show();
+            SyncKeyboards(); Save();
+        }
+        private void CaptureKeyboardPositions(Preferences p)
+        {
+            if (numericKeyboard != null && !numericKeyboard.IsDisposed) { p.HasNumericPosition = true; p.NumericX = numericKeyboard.Left; p.NumericY = numericKeyboard.Top; }
+            if (alphabetKeyboard != null && !alphabetKeyboard.IsDisposed) { p.HasAlphabetPosition = true; p.AlphabetX = alphabetKeyboard.Left; p.AlphabetY = alphabetKeyboard.Top; }
+        }
+        private void SyncKeyboards()
+        {
+            if (closing) return;
+            SyncKeyboard(false, ref numericKeyboard, Preferences.ShowNumericKeyboard);
+            SyncKeyboard(true, ref alphabetKeyboard, Preferences.ShowAlphabetKeyboard);
+        }
+        private void SyncKeyboard(bool alphabet, ref FloatingKeyboardForm form, bool enabled)
+        {
+            if (enabled && form == null)
+            {
+                form = new FloatingKeyboardForm(alphabet, ExecuteAction, () => SetKeyboardVisible(alphabet, false), () => Save());
+                bool positioned = alphabet ? Preferences.HasAlphabetPosition : Preferences.HasNumericPosition;
+                form.Location = positioned ? new Point(alphabet ? Preferences.AlphabetX : Preferences.NumericX, alphabet ? Preferences.AlphabetY : Preferences.NumericY) :
+                    alphabet ? new Point(Right - form.Width, Math.Max(Bottom, numericKeyboard != null && Preferences.ShowNumericKeyboard ? numericKeyboard.Bottom : Bottom) + U(12)) : new Point(Left - form.Width - U(12), Top);
+                form.KeepOnScreen();
+            }
+            if (form == null) return;
+            form.SetAppearance(Preferences.Compact, Preferences.OpacityPercent);
+            if (enabled && Visible) { form.Show(); form.KeepOnScreen(); } else form.Hide();
+        }
         private void Build()
         {
             body.SuspendLayout();
@@ -216,12 +259,16 @@ namespace ClickDeck
         }
         public bool Execute(ActionTile tile)
         {
-            if (settings != null && !settings.IsDisposed) { SetStatus("请先关闭设置窗口", true); return false; }
             string error;
-            bool ok = Native.SendAction(tile.Action, out error);
-            if (ok) { tile.Flash(); SetStatus("已执行 · " + tile.Action.Label, false); }
-            else SetStatus(error, true);
+            bool ok = ExecuteAction(tile.Action, out error);
+            if (ok) tile.Flash();
             return ok;
+        }
+        private bool ExecuteAction(ActionSpec action, out string error)
+        {
+            if (settings != null && !settings.IsDisposed) { error = "请先关闭设置窗口"; SetStatus(error, true); return false; }
+            bool ok = Native.SendAction(action, out error);
+            SetStatus(ok ? "已执行 · " + action.Label : error, !ok); return ok;
         }
         private void SetStatus(string value, bool error)
         {
@@ -231,6 +278,7 @@ namespace ClickDeck
         private void Save()
         {
             Preferences.HasPosition = true; Preferences.X = Left; Preferences.Y = Top;
+            CaptureKeyboardPositions(Preferences);
             try { store.Save(Preferences); }
             catch (Exception e) { if (!(e is IOException || e is UnauthorizedAccessException)) throw; SetStatus("设置未保存：" + e.Message, true); }
         }
@@ -276,12 +324,14 @@ namespace ClickDeck
         }
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            closing = true;
+            if (numericKeyboard != null) numericKeyboard.Hide(); if (alphabetKeyboard != null) alphabetKeyboard.Hide();
             if (settings != null) settings.Close();
             Save(); if (tray != null) tray.Visible = false; base.OnFormClosed(e);
         }
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { statusTimer.Dispose(); toolTip.Dispose(); if (tray != null) tray.Dispose(); if (trayMenu != null) trayMenu.Dispose(); if (trayIcon != null) trayIcon.Dispose(); }
+            if (disposing) { if (numericKeyboard != null) numericKeyboard.Dispose(); if (alphabetKeyboard != null) alphabetKeyboard.Dispose(); statusTimer.Dispose(); toolTip.Dispose(); if (tray != null) tray.Dispose(); if (trayMenu != null) trayMenu.Dispose(); if (trayIcon != null) trayIcon.Dispose(); }
             base.Dispose(disposing);
         }
     }

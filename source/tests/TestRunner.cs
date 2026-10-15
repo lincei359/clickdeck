@@ -43,6 +43,8 @@ class TestRunner
         Console.WriteLine("FOCUS target=" + target + " actual=" + Native.GetForegroundWindow() + " foreground process=" + Process.GetProcessById((int)foregroundPid).ProcessName);
         Check(Native.GetForegroundWindow() == target, "test target has foreground focus");
         SetWindowPos(toolbar.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13);
+        if (toolbar.NumericKeyboard != null && toolbar.NumericKeyboard.Visible) SetWindowPos(toolbar.NumericKeyboard.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13);
+        if (toolbar.AlphabetKeyboard != null && toolbar.AlphabetKeyboard.Visible) SetWindowPos(toolbar.AlphabetKeyboard.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x13);
     }
     static void Click(string shortcut)
     {
@@ -83,6 +85,10 @@ class TestRunner
         Preferences loaded = store.Load();
         Check(loaded.Actions.Count(a => a.Enabled) == 1 && loaded.Y == 345 && loaded.Columns == 1, "settings atomically persist visibility, layout and position");
         Check(loaded.Actions.Last().Text == "你好\n测试 😀", "JSON persists Unicode snippets");
+        Check(!loaded.ShowNumericKeyboard && !loaded.ShowAlphabetKeyboard, "legacy preferences keep both keyboards hidden");
+        prefs.ShowNumericKeyboard = prefs.ShowAlphabetKeyboard = true; prefs.HasNumericPosition = prefs.HasAlphabetPosition = true;
+        prefs.NumericX = 200; prefs.NumericY = 300; prefs.AlphabetX = 400; prefs.AlphabetY = 500; store.Save(prefs); loaded = store.Load();
+        Check(loaded.ShowNumericKeyboard && loaded.ShowAlphabetKeyboard && loaded.NumericX == 200 && loaded.AlphabetY == 500, "keyboard visibility and independent positions persist");
         Check(!File.Exists(store.FilePath + ".tmp"), "atomic save removes temporary file");
         Preferences clone = prefs.Copy(); clone.Actions[0].Label = "changed";
         Check(prefs.Actions[0].Label == "复制", "cancelable settings use a deep copy");
@@ -127,25 +133,98 @@ class TestRunner
     static void Preview(string path, string temp)
     {
         Preferences prefs = Preferences.Defaults();
+        prefs.ShowNumericKeyboard = prefs.ShowAlphabetKeyboard = true;
         using (ToolbarForm view = new ToolbarForm(prefs, new PreferenceStore(Path.Combine(temp, "preview-settings.json")), false))
         using (SettingsForm settings = new SettingsForm(prefs.Copy(), p => { }))
         {
             view.Show(); settings.Show(); Pump(160);
+            settings.ClientSize = new Size(settings.ClientSize.Width, settings.AutoScrollMinSize.Height);
             using (Bitmap left = new Bitmap(view.Width, view.Height))
             using (Bitmap right = new Bitmap(settings.Width, settings.Height))
+            using (Bitmap numbers = new Bitmap(view.NumericKeyboard.Width, view.NumericKeyboard.Height))
+            using (Bitmap letters = new Bitmap(view.AlphabetKeyboard.Width, view.AlphabetKeyboard.Height))
             {
                 view.DrawToBitmap(left, new Rectangle(Point.Empty, view.Size)); settings.DrawToBitmap(right, new Rectangle(Point.Empty, settings.Size));
+                view.NumericKeyboard.DrawToBitmap(numbers, new Rectangle(Point.Empty, numbers.Size)); view.AlphabetKeyboard.DrawToBitmap(letters, new Rectangle(Point.Empty, letters.Size));
                 int gap = 36, padding = 28;
-                using (Bitmap canvas = new Bitmap(left.Width + right.Width + gap + padding * 2, Math.Max(left.Height, right.Height) + padding * 2))
+                int leftWidth = Math.Max(left.Width + gap + numbers.Width, letters.Width);
+                int upperHeight = Math.Max(left.Height, numbers.Height);
+                using (Bitmap canvas = new Bitmap(leftWidth + right.Width + gap + padding * 2, Math.Max(upperHeight + gap + letters.Height, right.Height) + padding * 2))
                 using (Graphics g = Graphics.FromImage(canvas))
                 {
                     g.Clear(Color.FromArgb(232, 238, 231));
-                    g.DrawImage(left, padding, padding); g.DrawImage(right, padding + left.Width + gap, padding);
+                    g.DrawImage(left, padding, padding); g.DrawImage(numbers, padding + left.Width + gap, padding);
+                    g.DrawImage(letters, padding, padding + upperHeight + gap); g.DrawImage(right, padding + leftWidth + gap, padding);
                     canvas.Save(path, System.Drawing.Imaging.ImageFormat.Png);
                 }
             }
             settings.Close(); view.Close();
         }
+    }
+    static void KeyboardTests(Preferences original)
+    {
+        Preferences p = original.Copy(); p.ShowNumericKeyboard = true; p.ShowAlphabetKeyboard = true;
+        toolbar.ApplyPreferences(p); FocusTarget();
+        Check(toolbar.NumericKeyboard.Visible && toolbar.AlphabetKeyboard.Visible, "numeric and alphabet keyboards can be shown together");
+        Check(toolbar.AlphabetKeyboard.Keys.Count(k => k.Action.Shortcut.Length == 1 && Char.IsLetter(k.Action.Shortcut[0])) == 26, "QWERTY keyboard contains all 26 letters");
+        Check(toolbar.NumericKeyboard.Keys.Count(k => k.Action.Shortcut.Length == 1 && Char.IsDigit(k.Action.Shortcut[0])) == 10, "numeric keyboard contains all ten digits");
+        WriteText("", 0, 0);
+        foreach (char digit in "0123456789") ClickTile(toolbar.NumericKeyboard.Keys.Single(k => k.Action.Shortcut == digit.ToString()));
+        Check(ReadText() == "0123456789", "numeric keys enter digits independently of Num Lock");
+        ClickTile(toolbar.NumericKeyboard.Keys.Single(k => k.Action.Shortcut == "OemPeriod"));
+        ClickTile(toolbar.NumericKeyboard.Keys.Single(k => k.Action.Shortcut == "Backspace"));
+        Check(ReadText() == "0123456789", "numeric decimal point and backspace work");
+        bool initialCaps = Control.IsKeyLocked(Keys.CapsLock);
+        try
+        {
+            if (Control.IsKeyLocked(Keys.CapsLock)) ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "CapsLock"));
+            WriteText("", 0, 0); File.WriteAllText(eventLog, "");
+            foreach (char letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ") ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == letter.ToString()));
+            Check(ReadText() == "abcdefghijklmnopqrstuvwxyz", "all 26 keys type lowercase English");
+            string logged = File.ReadAllText(eventLog);
+            Check(logged.Contains("N|None") && !logged.Contains("Packet|"), "letters send physical key events for IME composition");
+            ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "CapsLock"));
+            WriteText("", 0, 0); ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "A"));
+            Check(ReadText() == "A", "Caps Lock types uppercase English");
+            Pump(300); Check(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "A").Action.Label == "A", "letter labels reflect Caps Lock");
+        }
+        finally
+        {
+            if (Control.IsKeyLocked(Keys.CapsLock) != initialCaps) ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "CapsLock"));
+        }
+        File.WriteAllText(eventLog, ""); ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Kind == "ime-toggle"));
+        Check(File.ReadAllText(eventLog).Contains("ShiftKey|Shift") && (Native.GetAsyncKeyState(0x10) & 0x8000) == 0, "Chinese-English toggle sends and releases Shift");
+        WriteText("", 0, 0); ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "Space"));
+        ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "Enter")); Check(ReadText() == " \r\n", "alphabet keyboard provides space and Enter");
+        bool capsBeforePinyin = Control.IsKeyLocked(Keys.CapsLock);
+        try
+        {
+            if (capsBeforePinyin) ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "CapsLock"));
+            WriteText("", 0, 0); File.WriteAllText(eventLog, "");
+            if (Native.SendMessage(target, 0x8033, IntPtr.Zero, IntPtr.Zero) == (IntPtr)1)
+            {
+                Pump(300);
+                foreach (char letter in "NIHAO") ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == letter.ToString()));
+                ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "Space")); Pump(400);
+                Check(ReadText() == "你好", "Microsoft Pinyin composes nihao and commits 你好 with Space (actual: " + ReadText() + ")");
+                Check(File.ReadAllText(eventLog).Contains("IME:"), "real IME composition messages received");
+            }
+            else Console.WriteLine("SKIP Microsoft Pinyin is not enabled on this Windows profile.");
+        }
+        finally
+        {
+            if (Control.IsKeyLocked(Keys.CapsLock) != capsBeforePinyin) ClickTile(toolbar.AlphabetKeyboard.Keys.Single(k => k.Action.Shortcut == "CapsLock"));
+        }
+        toolbar.ToggleVisible(); Check(!toolbar.NumericKeyboard.Visible && !toolbar.AlphabetKeyboard.Visible, "global hide hides both keyboards");
+        toolbar.ToggleVisible(); Check(toolbar.NumericKeyboard.Visible && toolbar.AlphabetKeyboard.Visible, "global show restores enabled keyboards");
+        toolbar.SetKeyboardVisible(false, false); Check(!toolbar.NumericKeyboard.Visible && toolbar.AlphabetKeyboard.Visible, "numeric keyboard hides independently");
+        toolbar.SetKeyboardVisible(true, false); Check(!toolbar.AlphabetKeyboard.Visible, "alphabet keyboard hides independently");
+        toolbar.OpenSettings(); Pump(100); SettingsForm settings = Application.OpenForms.OfType<SettingsForm>().Single();
+        settings.Controls.OfType<CheckBox>().Single(c => c.Text == "显示数字键盘").Checked = true;
+        settings.Controls.OfType<CheckBox>().Single(c => c.Text == "显示字母键盘").Checked = true;
+        Button(settings, "保存并应用").PerformClick(); Pump(150);
+        Check(toolbar.NumericKeyboard.Visible && toolbar.AlphabetKeyboard.Visible, "settings UI saves both keyboard switches");
+        toolbar.ApplyPreferences(original);
     }
     [STAThread]
     static int Main(string[] args)
@@ -204,6 +283,7 @@ class TestRunner
             toolbar.ToggleVisible(); Check(!toolbar.Visible, "hide toolbar"); toolbar.ToggleVisible(); Check(toolbar.Visible, "restore toolbar");
             toolbar.ApplyPreferences(prefs);
             FocusTarget(); EditorTests(prefs);
+            KeyboardTests(prefs);
             using (SettingsForm own = new SettingsForm(prefs.Copy(), p => { }))
             {
                 own.Show(); Pump(120); MouseClick(own.PointToScreen(new Point(own.Width / 2, 80))); Pump(100);
