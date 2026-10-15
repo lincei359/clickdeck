@@ -1,6 +1,11 @@
 name: Publish Windows release assets
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - source/AssemblyInfo.cs
+      - .github/workflows/release.yml
   release:
     types: [published]
   workflow_dispatch:
@@ -24,7 +29,34 @@ jobs:
       - name: Check out release source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
+
+      - name: Resolve version and create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:CLICKDECK_RELEASE_TAG
+          if (-not $tag) {
+            $source = Get-Content -LiteralPath source/AssemblyInfo.cs -Raw
+            $version = [regex]::Match($source, 'AssemblyVersion\("(\d+\.\d+\.\d+)\.\d+"\)')
+            if (-not $version.Success) { throw 'AssemblyVersion is missing.' }
+            $tag = 'v' + $version.Groups[1].Value
+          }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected a semantic version tag such as v1.1.0.' }
+          "CLICKDECK_RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          gh release view $tag --repo $env:GH_REPO --json tagName *> $null
+          if ($LASTEXITCODE -ne 0) {
+            $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
+            $section = [regex]::Match($changelog, '(?ms)^##\s+v' + [regex]::Escape($tag.Substring(1)) + '[^\n]*\n(.*?)(?=^##\s|\z)')
+            if (-not $section.Success) { throw 'A matching changelog section is required before publication.' }
+            $notes = $section.Groups[1].Value.Trim() + [Environment]::NewLine + [Environment]::NewLine + '下载 Windows.zip，解压后运行 ClickDeck.exe。升级前先退出旧版，原有配置会继续沿用。'
+            $notesPath = Join-Path $env:RUNNER_TEMP 'clickdeck-release-notes.md'
+            [System.IO.File]::WriteAllText($notesPath, $notes, [System.Text.UTF8Encoding]::new($false))
+            gh release create $tag --repo $env:GH_REPO --target $env:GITHUB_SHA --title "ClickDeck $tag · 点点快捷" --notes-file $notesPath --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed.' }
+          }
 
       - name: Build application
         shell: pwsh
@@ -50,5 +82,11 @@ jobs:
         run: |
           $archive = Join-Path (Get-Location) ('dist/ClickDeck-' + $env:CLICKDECK_RELEASE_TAG + '-Windows.zip')
           $checksum = Join-Path (Get-Location) ('dist/ClickDeck-' + $env:CLICKDECK_RELEASE_TAG + '-SHA256.txt')
-          gh release upload $env:CLICKDECK_RELEASE_TAG $archive $checksum --repo $env:GH_REPO
-          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
+          $existing = @(gh release view $env:CLICKDECK_RELEASE_TAG --repo $env:GH_REPO --json assets --jq '.assets[].name')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect release assets.' }
+          foreach ($file in @($archive, $checksum)) {
+            if ($existing -notcontains [System.IO.Path]::GetFileName($file)) {
+              gh release upload $env:CLICKDECK_RELEASE_TAG $file --repo $env:GH_REPO
+              if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }
+            }
+          }
